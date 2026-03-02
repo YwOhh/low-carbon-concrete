@@ -282,10 +282,8 @@ def filter_low_carbon_mixes(original_mixes_df, carbon_threshold=600, num_selecte
 np.random.seed(42)
 
 # 读取Excel文件
-file_path = r"D:\啦啦啦啦啦\修改后完整数据集2.xlsx"
-
-# 读取数据
-df = pd.read_excel(file_path)
+url = "https://raw.githubusercontent.com/YwOhh/low-carbon-concrete/main/data.xlsx"
+df = pd.read_excel(url)
 print("数据读取成功!")
 print(f"数据形状: {df.shape}")
 
@@ -673,3 +671,4 @@ print(f"  测试集R²: {ann_test_r2:.6f}")
 
 print("\n训练完成！")
 print("程序结束。")
+
