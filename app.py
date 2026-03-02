@@ -152,9 +152,9 @@ def train_all_models():
 
     # 8. 训练模型
     inn = RandomForestRegressor(300, max_depth=15, n_jobs=-1, random_state=42)
-    ann = MLPRegressor((128,64,32), max_iter=2000, random_state=42, early_stopping=True)
+    ann = MLPRegressor(hidden_layer_sizes=(128,64,32), max_iter=2000, random_state=42, early_stopping=True)
     inn.fit(ix_tr, iy_tr)
-    ann.fit(ax_tr, ay_tr)
+    ann.fit(ax_tr, ay_tr.ravel())  # 关键：把ay_tr转成一维
 
     return inn, ann, ix_s, iy_s, ax_s, ay_s, f_cols, f_real, stats, df, t_real
 
@@ -277,3 +277,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
