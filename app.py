@@ -73,7 +73,7 @@ def optimize_for_low_carbon(mix, cols, threshold=600):
 @st.cache_resource(show_spinner=False)
 def train_all_models():
     np.random.seed(42)
-    url = "https://raw.githubusercontent.com/YwOhh/low-carbon-concrete/main/修改后完整数据集2.xlsx"
+    url = "https://raw.githubusercontent.com/YwOhh/low-carbon-concrete/main/data.xlsx"
     df = pd.read_excel(url)
 
     mapping = {
@@ -243,3 +243,4 @@ def main():
 if __name__ == "__main__":
 
     main()
+
