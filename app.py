@@ -9,7 +9,7 @@ from sklearn.ensemble import RandomForestRegressor
 import warnings
 
 warnings.filterwarnings('ignore')
-st.set_page_config(page_title="低碳混凝土智能配比系统", layout="wide", page_icon="🌱")
+st.set_page_config(page_title="低碳混凝土智能配比系统", layout="wide", page_icon="")
 
 # ====================== 样式美化 ======================
 st.markdown("""
@@ -166,8 +166,9 @@ def train_all_models():
     ann_data = df_sample.iloc[half_idx:]
 
     # 6. 提取特征和目标（确保数组形状正确）
-    X_inn = inn_data[f_real].values  # Inverse模型输入（强度）
-    y_inn = inn_data[[t_real]].values.ravel()  # Inverse模型输出（配比）- 一维
+    # ✅ 修正：Inverse模型输入是强度列（1维），输出是配比列（多列）
+    X_inn = inn_data[[t_real]].values  # Inverse模型输入（强度，单列）
+    y_inn = inn_data[f_real].values.ravel() if len(f_real) == 1 else inn_data[f_real].values  # Inverse模型输出（配比）
     X_ann = ann_data[f_real].values  # Forward模型输入（配比）
     y_ann = ann_data[[t_real]].values.ravel()  # Forward模型输出（强度）- 一维
 
@@ -178,7 +179,7 @@ def train_all_models():
     scaler_y_ann = StandardScaler()
 
     X_inn_scaled = scaler_X_inn.fit_transform(X_inn)
-    y_inn_scaled = scaler_y_inn.fit_transform(y_inn.reshape(-1, 1)).ravel()
+    y_inn_scaled = scaler_y_inn.fit_transform(y_inn.reshape(-1, len(f_real)) if len(f_real) > 1 else y_inn.reshape(-1, 1)).ravel() if len(f_real) == 1 else scaler_y_inn.fit_transform(y_inn)
     X_ann_scaled = scaler_X_ann.fit_transform(X_ann)
     y_ann_scaled = scaler_y_ann.fit_transform(y_ann.reshape(-1, 1)).ravel()
 
@@ -249,11 +250,12 @@ def generate_mix(models_tuple, target_strength, n_mix=10, carbon_limit=600):
         return None
 
     # 1. 生成初始配比（基于Inverse模型）
+    # ✅ 修正：scaler_X_inn 训练时输入是单列强度，transform 也必须是单列
     target_scaled = scaler_X_inn.transform([[target_strength]])
     initial_mixes_scaled = model_inn.predict(target_scaled)
     # 逆标准化，得到真实配比（确保形状正确）
     initial_mixes = scaler_y_inn.inverse_transform(
-        initial_mixes_scaled.reshape(-1, len(f_real))
+        initial_mixes_scaled.reshape(-1, len(f_real)) if len(f_real) > 1 else initial_mixes_scaled.reshape(-1, 1)
     )
 
     # 2. 应用约束和低碳优化（确保配比有效）
@@ -429,4 +431,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
