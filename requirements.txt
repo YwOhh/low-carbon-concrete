@@ -1,5 +1,6 @@
-streamlit
-scikit-learn
-pandas
-numpy
-openpyxl
+streamlit==1.35.0
+pandas==2.2.2
+numpy==1.26.4
+scikit-learn==1.4.2
+openpyxl==3.1.5
+xlrd==2.0.1  # 兼容旧版Excel格式（如需）
