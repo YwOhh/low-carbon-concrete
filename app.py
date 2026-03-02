@@ -1,434 +1,675 @@
 import pandas as pd
 import numpy as np
-import streamlit as st
-from io import BytesIO
 from sklearn.preprocessing import StandardScaler
 from sklearn.model_selection import train_test_split
 from sklearn.neural_network import MLPRegressor
 from sklearn.ensemble import RandomForestRegressor
+from sklearn.metrics import mean_squared_error, r2_score
 import warnings
 
 warnings.filterwarnings('ignore')
-st.set_page_config(page_title="低碳混凝土智能配比系统", layout="wide", page_icon="")
 
-# ====================== 样式美化 ======================
-st.markdown("""
-<style>
-div.stButton > button {
-    background-color:#2E8B57;
-    color:white;
-    font-size:18px;
-    height:3em;
-    width:100%;
-    border-radius:10px;
-}
-div.stDownloadButton > button {
-    background-color:#1E90FF;
-    color:white;
-    font-size:16px;
-    border-radius:8px;
-}
-</style>
-""", unsafe_allow_html=True)
-
-# ====================== 碳排放计算（容错+动态列名匹配） ======================
+# ====================== 碳排放计算函数 ======================
 def calculate_emission(row):
-    GWP = {
-        'OPC': 0.925754987, 'S': 0.096949054, 'FA': 0.035101155, 'SF': 0.306808295,
-        'GS': 0.004197845, 'ADD': 0.940857761, 'FIBER': 0.027134144, 'WATER': 0.000552102
-    }
-    total = 0.0
-    # 动态匹配列名（关键词模糊匹配，适配Excel实际列名）
-    for key in row.index:
-        key_str = str(key).strip()
-        if 'OPC' in key_str:
-            total += row[key] * GWP['OPC']
-        elif 'S(kg/m3)' in key_str or 'S_' in key_str:
-            total += row[key] * GWP['S']
-        elif 'FA' in key_str:
-            total += row[key] * GWP['FA']
-        elif 'SF' in key_str:
-            total += row[key] * GWP['SF']
-        elif 'GS' in key_str:
-            total += row[key] * GWP['GS']
-        elif 'W(kg/m3)' in key_str or 'Water' in key_str:
-            total += row[key] * GWP['WATER']
-        elif 'Fvol' in key_str or 'Fiber' in key_str:
-            total += row[key] * GWP['FIBER']
-    # 外加剂计算（双重容错，避免IndexError）
-    sp_cols = [k for k in row.index if 'SP' in str(k)]
-    sp = row[sp_cols[0]] if (sp_cols and len(sp_cols) > 0) else 0
-    hpmc_cols = [k for k in row.index if 'HPMC' in str(k)]
-    hpmc = row[hpmc_cols[0]] if (hpmc_cols and len(hpmc_cols) > 0) else 0
-    total += (sp + hpmc) * GWP['ADD']
-    return total
+    """
+    计算单条配合比的碳排放量（kg CO2 eq/m³）
+    参数：
+        row: pandas.DataFrame的行对象，包含配合比所有列
+    返回：
+        total_emission: 总碳排放量
+    """
+    # 各组分GWP系数（kg CO2 eq/kg）
+    GWP_OPC = 0.925754987  # 水泥（高碳排放，重点控制）
+    GWP_S = 0.096949054    # 矿渣
+    GWP_FA = 0.035101155   # 粉煤灰（低碳替代料）
+    GWP_SF = 0.306808295   # 硅灰
+    GWP_GS = 0.004197845   # 粗骨料
+    GWP_ADD = 0.940857761  # 外加剂（SP+HPMC合并）
+    GWP_FIBER = 0.027134144 # 纤维（体积分数%）
+    GWP_WATER = 0.000552102 # 水
 
-# ====================== 低碳优化（列名容错+范围约束） ======================
-def optimize_for_low_carbon(mix, cols, threshold=600):
-    # 用Series构造数据，避免DataFrame列数不匹配
-    row = pd.Series(mix, index=cols)
-    em = calculate_emission(row)
-    if em <= threshold:
-        return mix
+    # 分项计算（兼容列名映射，确保能找到对应列）
+    e_opc = row['OPC (kg/m3)'] * GWP_OPC if 'OPC (kg/m3)' in row else 0
+    e_s = row['S (kg/m3)'] * GWP_S if 'S (kg/m3)' in row else 0
+    e_fa = row['FA (kg/m3)'] * GWP_FA if 'FA (kg/m3)' in row else 0
+    e_sf = row['SF (kg/m3)'] * GWP_SF if 'SF (kg/m3)' in row else 0
+    e_gs = row['GS (kg/m3)'] * GWP_GS if 'GS (kg/m3)' in row else 0
+    e_add = (row['SP (kg/m3)'] + row['HPMC (kg/m3)']) * GWP_ADD if 'SP (kg/m3)' in row and 'HPMC (kg/m3)' in row else 0
+    e_fiber = row['Fvol (%)f'] * GWP_FIBER if 'Fvol (%)f' in row else 0
+    e_water = row['W (kg/m3)'] * GWP_WATER if 'W (kg/m3)' in row else 0
 
-    # 关键列索引查找（容错，避免IndexError）
-    o_idx = cols.index('OPC(kg/m3)') if 'OPC(kg/m3)' in cols else -1
-    f_idx = cols.index('FA(kg/m3)') if 'FA(kg/m3)' in cols else -1
-    s_idx = cols.index('S(kg/m3)') if 'S(kg/m3)' in cols else -1
+    # 总碳排放
+    total_emission = e_opc + e_s + e_fa + e_sf + e_gs + e_add + e_fiber + e_water
+    return total_emission
 
-    # 关键列缺失时直接返回，避免后续计算错误
-    if o_idx == -1 or f_idx == -1 or s_idx == -1:
-        return mix
+# ====================== 约束函数（无碳排放优化） ======================
+def enforce_constraints_basic(mixes_original, cd_value=28):
+    """
+    基础约束函数（仅保证参数合理性，不做碳排放优化）
+    """
+    # 确保所有参数为非负
+    mixes_original = np.maximum(mixes_original, 0)
 
-    # 迭代优化水泥用量，降低碳排放
-    for _ in range(50):
-        cement_reduction = mix[o_idx] * 0.05  # 每次减少5%水泥
-        mix[o_idx] = max(50, mix[o_idx] - cement_reduction)  # 水泥最低50
-        mix[f_idx] += cement_reduction * 0.8  # 补充粉煤灰
-        mix[s_idx] += cement_reduction * 0.2  # 补充矿渣
-        # 重新计算碳排放，达标则退出
-        current_row = pd.Series(mix, index=cols)
-        current_em = calculate_emission(current_row)
-        if current_em <= threshold:
+    # 对每个特征应用范围约束
+    for i, col in enumerate(feature_columns):
+        if col in feature_stats:
+            min_val = feature_stats[col]['min']
+            max_val = feature_stats[col]['max']
+
+            # 应用范围约束
+            mixes_original[:, i] = np.clip(mixes_original[:, i], min_val, max_val)
+
+            # 对特定参数确保不为零
+            if ('Fvol' in col or 'fvol' in col.lower()) and feature_stats[col]['non_zero_min'] > 0:
+                # Fvol (%)f: 确保不为零，保留4位小数
+                for j in range(len(mixes_original)):
+                    if mixes_original[j, i] < feature_stats[col]['non_zero_min'] * 0.1:
+                        mixes_original[j, i] = np.random.uniform(
+                            feature_stats[col]['non_zero_min'] * 0.5,
+                            feature_stats[col]['non_zero_min'] * 2
+                        )
+
+            elif ('FA' in col and 'FA (kg/m3)' in col) and feature_stats[col]['non_zero_min'] > 0:
+                # FA: 确保不为零
+                for j in range(len(mixes_original)):
+                    if mixes_original[j, i] < feature_stats[col]['non_zero_min'] * 0.1:
+                        mixes_original[j, i] = np.random.uniform(
+                            feature_stats[col]['non_zero_min'] * 0.5,
+                            feature_stats[col]['non_zero_min'] * 5
+                        )
+
+            elif ('OPC' in col) and feature_stats[col]['non_zero_min'] > 0:
+                # OPC: 确保不为零
+                for j in range(len(mixes_original)):
+                    if mixes_original[j, i] < feature_stats[col]['non_zero_min'] * 0.1:
+                        mixes_original[j, i] = np.random.uniform(
+                            feature_stats[col]['non_zero_min'] * 0.5,
+                            feature_stats[col]['non_zero_min'] * 1.5
+                        )
+
+            elif ('W' in col and 'W (kg/m3)' in col) and feature_stats[col]['non_zero_min'] > 0:
+                # 水: 确保不为零
+                for j in range(len(mixes_original)):
+                    if mixes_original[j, i] < feature_stats[col]['non_zero_min'] * 0.1:
+                        mixes_original[j, i] = np.random.uniform(
+                            feature_stats[col]['non_zero_min'] * 0.5,
+                            feature_stats[col]['non_zero_min'] * 2
+                        )
+
+    # 设置CD值为指定值
+    cd_index = None
+    for idx, col in enumerate(feature_columns_original):
+        if 'CD' in col or 'cd' in col.lower():
+            cd_index = idx
             break
-    return mix
 
-# ====================== 模型训练（缓存+全流程容错） ======================
-@st.cache_resource(show_spinner=False)
-def train_all_models():
-    np.random.seed(42)
+    if cd_index is not None:
+        mixes_original[:, cd_index] = cd_value
 
-    # 1. 读取在线Excel（容错，避免网络或文件错误）
-    try:
-        url = "https://raw.githubusercontent.com/YwOhh/low-carbon-concrete/main/data.xlsx"
-        df = pd.read_excel(url)
-        # 清理列名（去除空格、特殊字符，统一格式）
-        df.columns = [str(col).strip().replace(' ', '').replace('\u3000', '') for col in df.columns]
-    except Exception as e:
-        st.error(f"数据读取失败：{str(e)}")
-        return None
+    # 确保W/B（水胶比）在合理范围内 (0.2-0.8)
+    wb_index = None
+    for idx, col in enumerate(feature_columns_original):
+        if 'W/B' in col or 'w/b' in col.lower():
+            wb_index = idx
+            break
 
-    # 2. 列名映射（严格匹配清理后的Excel列名）
-    mapping = {
-        'OPC(kg/m3)': 'OPC(kg/m3)',
-        'S(kg/m3)': 'S(kg/m3)',
-        'W/B': 'W/B',
-        'FA(kg/m3)': 'FA(kg/m3)',
-        'GS(kg/m3)': 'GS(kg/m3)',
-        'SF(kg/m3)': 'SF(kg/m3)',
-        'SP(kg/m3)': 'SP(kg/m3)',
-        'HPMC(kg/m3)': 'HPMC(kg/m3)',
-        'W(kg/m3)': 'W(kg/m3)',
-        'Fvol(%)f': 'Fvol(%)f',
-        'CD（d)': 'CD（d)',
-        'LD(X,Y,Z)': 'LD(X,Y,Z)',
-        'Strength（GPa）': 'Strength（GPa）',
-        'ElasticModulus(GPa)': 'ElasticModulus(GPa)',
-        'Density(g/cm3)': 'Density(g/cm3)',
-        'Lf/Df': 'Lf/Df',
-        'Df(μm)': 'Df(μm)',
-        'Lf(mm)': 'Lf(mm)',
-        'CS(MPa)': 'CS(MPa)'
-    }
+    if wb_index is not None:
+        mixes_original[:, wb_index] = np.clip(mixes_original[:, wb_index], 0.2, 0.8)
 
-    # 3. 筛选有效列（只保留Excel中存在的列，避免KeyError）
-    f_cols_all = list(mapping.keys())[:-1]  # 所有特征列
-    t_col_target = list(mapping.keys())[-1]  # 目标列（强度）
-    # 过滤不存在的列
-    f_real = [mapping[col] for col in f_cols_all if mapping[col] in df.columns]
-    t_real = mapping[t_col_target] if mapping[t_col_target] in df.columns else df.columns[-1]
+    # 根据小数位数要求进行四舍五入
+    for i, col in enumerate(feature_columns):
+        if 'Fvol' in col or 'fvol' in col.lower():
+            mixes_original[:, i] = np.round(mixes_original[:, i], 4)
+        else:
+            mixes_original[:, i] = np.round(mixes_original[:, i], 2)
 
-    # 4. 特征范围计算（只处理有效列）
-    stats = {}
-    for col in f_real:
-        if col in df.columns:
-            col_data = df[col].dropna()  # 去除空值
-            if len(col_data) > 0:
-                q1 = col_data.quantile(0.05)
-                q3 = col_data.quantile(0.95)
-                min_val = max(0, q1 - 1.5 * (q3 - q1))  # 下界（非负）
-                max_val = q3 + 1.5 * (q3 - q1)          # 上界
-                # 特殊材料范围约束
-                if 'OPC' in col:
-                    min_val, max_val = max(min_val, 50), min(max_val, 300)
-                if 'FA' in col:
-                    min_val, max_val = max(min_val, 20), min(max_val, 600)
-                stats[col] = {'min': min_val, 'max': max_val}
+    # 再次确保没有负值
+    mixes_original = np.maximum(mixes_original, 0)
 
-    # 5. 数据分割（确保特征和目标列存在）
-    if len(f_real) == 0 or t_real not in df.columns:
-        st.error("有效特征列或目标列缺失，无法训练模型")
-        return None
-    # 拆分数据为Inverse和Forward模型数据集
-    df_sample = df.sample(frac=1, random_state=42)  # 打乱数据
-    half_idx = len(df_sample) // 2
-    inn_data = df_sample.iloc[:half_idx]
-    ann_data = df_sample.iloc[half_idx:]
+    return mixes_original
 
-    # 6. 提取特征和目标（确保数组形状正确）
-    # ✅ 修正：Inverse模型输入是强度列（1维），输出是配比列（多列）
-    X_inn = inn_data[[t_real]].values  # Inverse模型输入（强度，单列）
-    y_inn = inn_data[f_real].values.ravel() if len(f_real) == 1 else inn_data[f_real].values  # Inverse模型输出（配比）
-    X_ann = ann_data[f_real].values  # Forward模型输入（配比）
-    y_ann = ann_data[[t_real]].values.ravel()  # Forward模型输出（强度）- 一维
+# ====================== 阶段1：生成无碳排放约束的大量配合比 ======================
+def generate_mixes_without_carbon(target_strength, num_candidates=500, cd_value=28, error_threshold=5.0):
+    """
+    生成大量不考虑碳排放的配合比（仅考虑强度误差）
+    """
+    print(f"生成{num_candidates}个候选配合比（仅考虑强度误差≤±{error_threshold}%）...")
 
-    # 7. 数据标准化（避免量纲影响）
-    scaler_X_inn = StandardScaler()
-    scaler_y_inn = StandardScaler()
-    scaler_X_ann = StandardScaler()
-    scaler_y_ann = StandardScaler()
+    # 将目标强度标准化
+    target_scaled = inn_X_scaler.transform([[target_strength]])
 
-    X_inn_scaled = scaler_X_inn.fit_transform(X_inn)
-    y_inn_scaled = scaler_y_inn.fit_transform(y_inn.reshape(-1, len(f_real)) if len(f_real) > 1 else y_inn.reshape(-1, 1)).ravel() if len(f_real) == 1 else scaler_y_inn.fit_transform(y_inn)
-    X_ann_scaled = scaler_X_ann.fit_transform(X_ann)
-    y_ann_scaled = scaler_y_ann.fit_transform(y_ann.reshape(-1, 1)).ravel()
+    candidate_mixes = []
+    candidate_errors = []
+    candidate_percentage_errors = []
 
-    # 8. 模型训练（容错，避免训练失败）
-    try:
-        # Inverse模型（RandomForest：输入强度→输出配比）
-        model_inn = RandomForestRegressor(
-            n_estimators=300,
-            max_depth=15,
-            n_jobs=-1,
-            random_state=42,
-            verbose=0
-        )
-        model_inn.fit(X_inn_scaled, y_inn_scaled)
+    # 生成大量候选配合比
+    for i in range(num_candidates):
+        # 不同的噪声水平，增加多样性
+        if i < num_candidates * 0.5:  # 50%小噪声
+            noise_level = 0.03 * (1 + np.random.rand())
+        elif i < num_candidates * 0.85:  # 35%中等噪声
+            noise_level = 0.1 * (1 + np.random.rand())
+        else:  # 15%大噪声
+            noise_level = 0.2 * (1 + np.random.rand())
 
-        # Forward模型（MLP：输入配比→输出强度）
-        model_ann = MLPRegressor(
-            hidden_layer_sizes=(128, 64, 32),
-            max_iter=2000,
-            random_state=42,
-            early_stopping=True,
-            verbose=0
-        )
-        model_ann.fit(X_ann_scaled, y_ann_scaled)
-    except Exception as e:
-        st.error(f"模型训练失败：{str(e)}")
-        return None
+        # 添加噪声
+        noise = np.random.normal(0, noise_level, size=target_scaled.shape)
+        noisy_target = target_scaled + noise
 
-    # 返回所有模型和工具（确保后续调用可用）
-    return (model_inn, model_ann, 
-            scaler_X_inn, scaler_y_inn, 
-            scaler_X_ann, scaler_y_ann, 
-            f_cols_all, f_real, stats, df, t_real)
+        # 生成配合比
+        mix_scaled = inn_model.predict(noisy_target)
 
-# ====================== 约束函数（列数匹配+范围限制） ======================
-def constrain(mix_array, valid_cols, stats_dict, cd=28, carbon_limit=600):
-    # 确保输入是2D数组（适配批量处理）
-    if mix_array.ndim == 1:
-        mix_array = mix_array.reshape(1, -1)
-    # 逐行处理配比，应用约束
-    for i in range(len(mix_array)):
-        # 1. 非负约束（材料用量不能为负）
-        mix_array[i] = np.maximum(mix_array[i], 0)
-        # 2. 材料范围约束（基于训练数据统计）
-        for j, col in enumerate(valid_cols):
-            if col in stats_dict:
-                mix_array[i][j] = np.clip(
-                    mix_array[i][j],
-                    stats_dict[col]['min'],
-                    stats_dict[col]['max']
-                )
-        # 3. 低碳优化（降低碳排放）
-        mix_array[i] = optimize_for_low_carbon(
-            mix_array[i], valid_cols, carbon_limit
-        )
-    return mix_array
+        # 反标准化
+        mix_original = inn_y_scaler.inverse_transform(mix_scaled.reshape(1, -1))
 
-# ====================== 生成函数（全流程无报错） ======================
-def generate_mix(models_tuple, target_strength, n_mix=10, carbon_limit=600):
-    # 解包模型和工具（容错，避免None）
-    try:
-        (model_inn, model_ann, 
-         scaler_X_inn, scaler_y_inn, 
-         scaler_X_ann, scaler_y_ann, 
-         f_cols_all, f_real, stats_dict, df, t_real) = models_tuple
-    except:
-        st.error("模型数据不完整，无法生成配比")
-        return None
+        # 应用基础约束（无碳排放优化）
+        mix_constrained = enforce_constraints_basic(mix_original, cd_value)
 
-    # 1. 生成初始配比（基于Inverse模型）
-    # ✅ 修正：scaler_X_inn 训练时输入是单列强度，transform 也必须是单列
-    target_scaled = scaler_X_inn.transform([[target_strength]])
-    initial_mixes_scaled = model_inn.predict(target_scaled)
-    # 逆标准化，得到真实配比（确保形状正确）
-    initial_mixes = scaler_y_inn.inverse_transform(
-        initial_mixes_scaled.reshape(-1, len(f_real)) if len(f_real) > 1 else initial_mixes_scaled.reshape(-1, 1)
-    )
+        # 预测强度
+        mix_scaled_constrained = ann_X_scaler.transform(mix_constrained)
+        pred_scaled = ann_model.predict(mix_scaled_constrained)
+        pred = ann_y_scaler.inverse_transform(pred_scaled.reshape(-1, 1))
 
-    # 2. 应用约束和低碳优化（确保配比有效）
-    constrained_mixes = constrain(initial_mixes, f_real, stats_dict, carbon_limit=carbon_limit)
+        # 计算绝对误差和百分比误差
+        error = abs(pred[0, 0] - target_strength)
+        percentage_error = abs((pred[0, 0] - target_strength) / target_strength * 100) if target_strength > 0 else 0
 
-    # 3. 筛选优质配比（强度误差<10%，碳排放达标）
-    valid_mixes = []
-    valid_emissions = []
-    valid_strengths = []
-    for mix in constrained_mixes:
-        # 计算预测强度（Forward模型）
-        mix_scaled = scaler_X_ann.transform([mix])
-        pred_strength_scaled = model_ann.predict(mix_scaled)
-        pred_strength = scaler_y_ann.inverse_transform(pred_strength_scaled.reshape(-1, 1))[0][0]
-        # 计算碳排放
-        mix_series = pd.Series(mix, index=f_real)
-        emission = calculate_emission(mix_series)
-        # 筛选条件：强度误差<10% + 碳排放达标
-        strength_error = abs(pred_strength - target_strength) / target_strength
-        if strength_error <= 0.1 and emission <= carbon_limit:
-            valid_mixes.append(mix)
-            valid_emissions.append(emission)
-            valid_strengths.append(pred_strength)
+        candidate_mixes.append(mix_constrained[0])
+        candidate_errors.append(error)
+        candidate_percentage_errors.append(percentage_error)
 
-    # 4. 处理无有效配比的情况
-    if len(valid_mixes) == 0:
-        st.warning("无满足条件的配比，放宽约束后重新生成")
-        # 放宽约束重新生成
-        constrained_mixes = constrain(initial_mixes, f_real, stats_dict, carbon_limit=carbon_limit+100)
-        for mix in constrained_mixes:
-            mix_scaled = scaler_X_ann.transform([mix])
-            pred_strength_scaled = model_ann.predict(mix_scaled)
-            pred_strength = scaler_y_ann.inverse_transform(pred_strength_scaled.reshape(-1, 1))[0][0]
-            mix_series = pd.Series(mix, index=f_real)
-            emission = calculate_emission(mix_series)
-            valid_mixes.append(mix)
-            valid_emissions.append(emission)
-            valid_strengths.append(pred_strength)
-        # 确保至少返回n_mix个配比
-        valid_mixes = valid_mixes[:n_mix]
-        valid_emissions = valid_emissions[:n_mix]
-        valid_strengths = valid_strengths[:n_mix]
+    # 转换为数组
+    candidate_mixes = np.array(candidate_mixes)
+    candidate_errors = np.array(candidate_errors)
+    candidate_percentage_errors = np.array(candidate_percentage_errors)
 
-    # 5. 构造输出DataFrame（确保列名匹配）
-    mix_df = pd.DataFrame(valid_mixes, columns=f_real)
-    # 添加结果列
-    mix_df['预测强度(MPa)'] = np.round(valid_strengths, 2)
-    mix_df['目标强度(MPa)'] = target_strength
-    mix_df['误差(MPa)'] = np.round(mix_df['预测强度(MPa)'] - target_strength, 2)
-    mix_df['误差(%)'] = np.round(abs(mix_df['误差(MPa)']) / target_strength * 100, 2)
-    mix_df['碳排放(kgCO₂/m³)'] = np.round(valid_emissions, 2)
+    print(f"候选配合比误差范围: {candidate_errors.min():.4f} - {candidate_errors.max():.4f} MPa")
+    print(f"候选配合比百分比误差范围: {candidate_percentage_errors.min():.2f}% - {candidate_percentage_errors.max():.2f}%")
 
-    return mix_df
+    # 筛选误差在阈值内的配合比
+    within_error_threshold = candidate_percentage_errors <= error_threshold
+    valid_indices = np.where(within_error_threshold)[0]
 
-# ====================== 导出功能（Excel/CSV） ======================
-def to_excel(df):
-    output = BytesIO()
-    with pd.ExcelWriter(output, engine='openpyxl') as writer:
-        df.to_excel(writer, sheet_name='低碳混凝土配比', index=False)
-    output.seek(0)
-    return output
+    print(f"符合±{error_threshold}%误差的候选配合比数量: {len(valid_indices)}")
 
-def to_csv(df):
-    return df.to_csv(index=False, encoding='utf-8-sig').encode('utf-8')
+    if len(valid_indices) == 0:
+        print(f"警告: 没有找到误差≤{error_threshold}%的配合比，放宽到±10%...")
+        within_10_percent = candidate_percentage_errors <= 10.0
+        valid_indices = np.where(within_10_percent)[0]
 
-# ====================== 主界面（用户交互） ======================
-def main():
-    st.title("低碳混凝土配合比智能生成系统")
-    st.markdown("### 双AI模型驱动 | 强制低碳约束 | 强度精准控制 | 一键导出报告")
-    st.divider()
-
-    # 1. 加载模型（显示状态）
-    with st.spinner("正在加载模型和数据..."):
-        models = train_all_models()
-    if models is None:
-        st.error("系统初始化失败，请检查数据或网络后刷新页面")
-        return
+    # 选择误差最小的配合比
+    if len(valid_indices) > 0:
+        valid_errors = candidate_errors[valid_indices]
+        # 按误差排序，保留所有有效配合比（保证数量充足）
+        sorted_indices = valid_indices[np.argsort(valid_errors)]
+        selected_mixes = candidate_mixes[sorted_indices]
+        selected_errors = candidate_errors[sorted_indices]
+        selected_percentage_errors = candidate_percentage_errors[sorted_indices]
     else:
-        st.success("✅ 模型和数据加载完成，可开始生成配比")
+        # 如果都不满足，选择误差最小的num_candidates个
+        sorted_indices = np.argsort(candidate_errors)
+        selected_mixes = candidate_mixes[sorted_indices[:num_candidates]]
+        selected_errors = candidate_errors[sorted_indices[:num_candidates]]
+        selected_percentage_errors = candidate_percentage_errors[sorted_indices[:num_candidates]]
 
-    # 2. 提取模型参数（用于后续计算）
-    _, _, _, _, _, _, _, f_real, _, df_all, t_real = models
-    # 计算强度范围（基于训练数据，避免用户输入异常值）
-    strength_data = df_all[t_real].dropna()
-    min_strength = max(0, strength_data.quantile(0.05) * 0.8)
-    max_strength = strength_data.quantile(0.95) * 1.2
+    # 创建DataFrame
+    mixes_df = pd.DataFrame(selected_mixes, columns=feature_columns_original)
 
-    # 3. 用户参数设置
-    st.subheader("🎯 生成参数设置")
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        target_strength = st.number_input(
-            "目标抗压强度 (MPa)",
-            min_value=float(np.round(min_strength, 1)),
-            max_value=float(np.round(max_strength, 1)),
-            value=40.0,
-            step=1.0
+    # 确保CD值为指定值
+    cd_col_name = None
+    for col in mixes_df.columns:
+        if 'CD' in col or 'cd' in col.lower():
+            cd_col_name = col
+            break
+
+    if cd_col_name:
+        mixes_df[cd_col_name] = cd_value
+
+    # 重新预测强度
+    mixes_scaled = ann_X_scaler.transform(mixes_df.values)
+    pred_scaled = ann_model.predict(mixes_scaled)
+    pred = ann_y_scaler.inverse_transform(pred_scaled.reshape(-1, 1))
+
+    # 添加预测强度、误差列
+    mixes_df['Predicted_CS_MPa'] = np.round(pred, 2)
+    mixes_df['Target_CS_MPa'] = target_strength
+    mixes_df['Error_MPa'] = np.round(mixes_df['Predicted_CS_MPa'] - target_strength, 2)
+    mixes_df['Percentage_Error_%'] = np.round(
+        abs(mixes_df['Predicted_CS_MPa'] - target_strength) / target_strength * 100, 2) if target_strength > 0 else 0
+
+    return mixes_df
+
+# ====================== 阶段2：从已有配合比中筛选低碳结果 ======================
+def filter_low_carbon_mixes(original_mixes_df, carbon_threshold=600, num_selected=20):
+    """
+    从已生成的配合比中筛选低碳结果
+    参数：
+        original_mixes_df: 阶段1生成的无碳排放约束的配合比DataFrame
+        carbon_threshold: 碳排放阈值
+        num_selected: 最终选择的低碳配合比数量
+    返回：
+        low_carbon_mixes_df: 筛选后的低碳配合比
+    """
+    print(f"\n从{len(original_mixes_df)}个配合比中筛选碳排放≤{carbon_threshold}的低碳配合比...")
+
+    # 计算每个配合比的碳排放
+    original_mixes_df['碳排放(kg CO2 eq/m³)'] = original_mixes_df.apply(calculate_emission, axis=1)
+
+    # 筛选碳排放≤阈值的配合比
+    low_carbon_candidates = original_mixes_df[original_mixes_df['碳排放(kg CO2 eq/m³)'] <= carbon_threshold].copy()
+
+    print(f"找到{len(low_carbon_candidates)}个碳排放≤{carbon_threshold}的配合比")
+
+    if len(low_carbon_candidates) == 0:
+        print(f"警告: 没有找到碳排放≤{carbon_threshold}的配合比，选择碳排放最低的{num_selected}个")
+        # 按碳排放升序排序，选最低的
+        low_carbon_candidates = original_mixes_df.sort_values('碳排放(kg CO2 eq/m³)').head(num_selected).copy()
+    elif len(low_carbon_candidates) > num_selected:
+        # 按误差+碳排放综合排序，选择最优的num_selected个
+        low_carbon_candidates['综合评分'] = low_carbon_candidates['Error_MPa'].abs() + (low_carbon_candidates['碳排放(kg CO2 eq/m³)'] / 1000)
+        low_carbon_candidates = low_carbon_candidates.sort_values('综合评分').head(num_selected).copy()
+
+    # 重置索引
+    low_carbon_candidates = low_carbon_candidates.reset_index(drop=True)
+
+    print(f"最终筛选出{len(low_carbon_candidates)}个低碳配合比")
+    print(f"低碳配合比碳排放范围: {low_carbon_candidates['碳排放(kg CO2 eq/m³)'].min():.2f} - {low_carbon_candidates['碳排放(kg CO2 eq/m³)'].max():.2f} kg CO2 eq/m³")
+
+    return low_carbon_candidates
+
+# ====================== 主程序 ======================
+# 设置随机种子以确保可重复性
+np.random.seed(42)
+
+# 读取Excel文件
+file_path = r"D:\啦啦啦啦啦\修改后完整数据集2.xlsx"
+
+# 读取数据
+df = pd.read_excel(file_path)
+print("数据读取成功!")
+print(f"数据形状: {df.shape}")
+
+# 手动映射列名
+column_mapping = {
+    'OPC (kg/m3)': 'OPC (kg/m3)',
+    'S (kg/m3)': 'S (kg/m3)',
+    'W/B': 'W/B',
+    'FA (kg/m3)': 'FA (kg/m3)',
+    'GS (kg/m3)': 'GS (kg/m3)',
+    'SF (kg/m3)': 'SF (kg/m3)',
+    'SP (kg/m3)': 'SP (kg/m3)',
+    'HPMC (kg/m3)': 'HPMC (kg/m3)',
+    'W (kg/m3)': 'W (kg/m3)',
+    'Fvol (%)f': 'Fvol (%)f',
+    'CD（d)': 'CD（d)',
+    'LD (X,Y,Z)': 'LD (X,Y,Z)',
+    'Strength （GPa）': 'Strength （GPa）',
+    'Elastic Modulus (GPa)': 'Elastic Modulus (GPa)',
+    'Density (g/cm3)': 'Density (g/cm3)',
+    'Lf/Df': 'Lf/Df',
+    'Df (μm)': 'Df (μm)',
+    'Lf (mm)': 'Lf (mm)',
+    'CS (MPa)': 'CS (MPa)'
+}
+
+# 检查并更新列名映射
+for expected_col, actual_col in column_mapping.items():
+    if actual_col not in df.columns:
+        for df_col in df.columns:
+            if expected_col.lower().replace(' ', '').replace('（', '(').replace('）', ')') in df_col.lower().replace(' ', '').replace('（', '(').replace('）', ')'):
+                column_mapping[expected_col] = df_col
+                break
+
+# 获取实际的特征列名和目标列名
+feature_columns_original = list(column_mapping.keys())[:-1]  # 前18个是特征
+target_column_original = list(column_mapping.keys())[-1]    # 最后一个是目标
+
+feature_columns = [column_mapping[col] for col in feature_columns_original]
+target_column = column_mapping[target_column_original]
+
+print(f"\n使用的特征列 (18个):")
+for i, col in enumerate(feature_columns):
+    print(f"{i + 1:2d}. {col}")
+print(f"\n目标列: {target_column}")
+
+# 计算每个特征列的统计信息
+feature_stats = {}
+print("\n特征统计信息:")
+for col in feature_columns:
+    if col in df.columns:
+        col_data = df[col]
+        # 计算非零最小值（如果存在非零值）
+        non_zero_data = col_data[col_data > 0]
+        if len(non_zero_data) > 0:
+            non_zero_min = non_zero_data.min()
+        else:
+            non_zero_min = 0
+
+        # 计算合理的范围
+        q1 = col_data.quantile(0.05)  # 5%分位数
+        q3 = col_data.quantile(0.95)  # 95%分位数
+        iqr = q3 - q1
+        min_val = max(0, q1 - 1.5 * iqr)
+        max_val = q3 + 1.5 * iqr
+
+        # 特定参数的特殊处理
+        if 'Fvol' in col or 'fvol' in col.lower():
+            # 纤维体积率通常不为零，且需要较高精度
+            if non_zero_min > 0:
+                min_val = max(min_val, non_zero_min * 0.5)
+            else:
+                min_val = max(min_val, 0.1)  # 默认最小0.1%
+            max_val = min(max_val, 10)  # 纤维体积率通常不超过10%
+
+        if 'FA' in col and 'FA (kg/m3)' in col:
+            # 粉煤灰
+            if non_zero_min > 0:
+                min_val = max(min_val, non_zero_min * 0.5)
+            else:
+                min_val = max(min_val, 20)  # 默认最小20 kg/m³
+            max_val = min(max_val, 600)  # 提高粉煤灰上限
+
+        if 'OPC' in col:
+            # 水泥
+            if non_zero_min > 0:
+                min_val = max(min_val, non_zero_min * 0.5)
+            else:
+                min_val = max(min_val, 50)  # 最小50 kg/m³
+            max_val = min(max_val, 300)  # 上限300 kg/m³
+
+        if 'W' in col and 'W (kg/m3)' in col:
+            # 水
+            if non_zero_min > 0:
+                min_val = max(min_val, non_zero_min * 0.5)
+            else:
+                min_val = max(min_val, 100)  # 默认最小100 kg/m³
+
+        if 'SP' in col and 'SP (kg/m3)' in col:
+            # 减水剂
+            if non_zero_min > 0:
+                min_val = max(min_val, non_zero_min * 0.5)
+            else:
+                min_val = max(min_val, 0.1)  # 默认最小0.1 kg/m³
+
+        feature_stats[col] = {
+            'min': float(min_val),
+            'max': float(max_val),
+            'non_zero_min': float(non_zero_min) if non_zero_min > 0 else 0,
+            'mean': float(col_data.mean()),
+            'std': float(col_data.std())
+        }
+
+# 分割数据
+df_shuffled = df.sample(frac=1, random_state=42).reset_index(drop=True)
+split_point = len(df_shuffled) // 2
+inn_data = df_shuffled.iloc[:split_point].reset_index(drop=True)
+ann_data = df_shuffled.iloc[split_point:].reset_index(drop=True)
+
+print(f"\n数据分割:")
+print(f"INN模型数据: {len(inn_data)} 行")
+print(f"ANN模型数据: {len(ann_data)} 行")
+
+# 准备数据
+inn_X = inn_data[[target_column]].values
+inn_y = inn_data[feature_columns].values
+ann_X = ann_data[feature_columns].values
+ann_y = ann_data[[target_column]].values
+
+# 数据标准化
+inn_X_scaler = StandardScaler()
+inn_y_scaler = StandardScaler()
+ann_X_scaler = StandardScaler()
+ann_y_scaler = StandardScaler()
+
+inn_X_scaled = inn_X_scaler.fit_transform(inn_X)
+inn_y_scaled = inn_y_scaler.fit_transform(inn_y)
+ann_X_scaled = ann_X_scaler.fit_transform(ann_X)
+ann_y_scaled = ann_y_scaler.fit_transform(ann_y)
+
+# 划分训练集和测试集
+inn_X_train, inn_X_test, inn_y_train, inn_y_test = train_test_split(
+    inn_X_scaled, inn_y_scaled, test_size=0.2, random_state=42
+)
+
+ann_X_train, ann_X_test, ann_y_train, ann_y_test = train_test_split(
+    ann_X_scaled, ann_y_scaled, test_size=0.2, random_state=42
+)
+
+print(f"\nINN模型数据集:")
+print(f"  训练集: {len(inn_X_train)} 个样本")
+print(f"  测试集: {len(inn_X_test)} 个样本")
+
+print(f"\nANN模型数据集:")
+print(f"  训练集: {len(ann_X_train)} 个样本")
+print(f"  测试集: {len(ann_X_test)} 个样本")
+
+# 创建和训练INN模型
+print("\n" + "=" * 60)
+print("训练INN模型（逆模型：强度 -> 配合比）...")
+
+inn_model = RandomForestRegressor(
+    n_estimators=300,
+    max_depth=15,
+    min_samples_split=5,
+    min_samples_leaf=2,
+    random_state=42,
+    n_jobs=-1
+)
+
+inn_model.fit(inn_X_train, inn_y_train)
+print("INN模型训练完成!")
+
+# 创建和训练ANN模型
+print("\n" + "=" * 60)
+print("训练ANN模型（前向模型：配合比 -> 强度）...")
+
+ann_model = MLPRegressor(
+    hidden_layer_sizes=(128, 64, 32),
+    activation='relu',
+    solver='adam',
+    max_iter=2000,
+    random_state=42,
+    learning_rate_init=0.001,
+    alpha=0.0001,
+    early_stopping=True,
+    validation_fraction=0.1,
+    verbose=False
+)
+
+ann_model.fit(ann_X_train, ann_y_train)
+print("ANN模型训练完成!")
+
+# ====================== 交互式生成和筛选 ======================
+print("\n" + "=" * 60)
+print("混凝土配合比生成系统（两阶段模式）")
+print("=" * 60)
+print("说明:")
+print("1. 阶段1：生成大量不考虑碳排放的配合比（仅满足强度要求）")
+print("2. 阶段2：点击低碳按钮，从已生成的配合比中筛选低碳结果")
+print("=" * 60)
+
+# 全局变量存储阶段1生成的配合比
+global_mixes_df = None
+
+while True:
+    try:
+        print(f"\n数据强度范围: {df[target_column].min():.2f} - {df[target_column].max():.2f} MPa")
+        target_strength = float(input("请输入目标混凝土强度 (MPa) [输入0退出]: "))
+
+        if target_strength == 0:
+            print("感谢使用，再见！")
+            break
+
+        # 检查目标强度是否在合理范围内
+        data_min = df[target_column].min()
+        data_max = df[target_column].max()
+
+        if target_strength < data_min * 0.8 or target_strength > data_max * 1.2:
+            print(f"警告: 目标强度 {target_strength} MPa 超出数据范围的80-120% ({data_min:.2f} - {data_max:.2f} MPa)")
+            proceed = input("是否继续? (y/n): ")
+            if proceed.lower() != 'y':
+                continue
+
+        # 阶段1：生成大量无碳排放约束的配合比
+        print(f"\n===== 阶段1：生成无碳排放约束的配合比 =====")
+        num_candidates = int(input("请输入要生成的候选配合比数量 (默认500): ") or "500")
+        error_threshold = float(input("请输入强度误差阈值(%) (默认5): ") or "5")
+        
+        print(f"\n正在生成{num_candidates}个配合比（仅考虑强度误差≤±{error_threshold}%）...")
+        global_mixes_df = generate_mixes_without_carbon(
+            target_strength, 
+            num_candidates=num_candidates, 
+            cd_value=28, 
+            error_threshold=error_threshold
         )
-    with col2:
-        mix_count = st.slider(
-            "生成配比数量",
-            min_value=1,
-            max_value=50,
-            value=10,
-            step=1
-        )
-    with col3:
-        carbon_limit = st.number_input(
-            "碳排放上限 (kgCO₂/m³)",
-            min_value=300,
-            max_value=1000,
-            value=600,
-            step=50
-        )
 
-    # 4. 生成配比（用户触发）
-    if st.button("🚀 一键生成低碳配合比"):
-        with st.spinner(f"正在生成{mix_count}组低碳配比..."):
-            result_df = generate_mix(models, target_strength, mix_count, carbon_limit)
-        if result_df is None:
-            st.error("配比生成失败，请重试")
-            return
+        # 显示阶段1结果
+        print("\n" + "=" * 120)
+        print(f"阶段1完成：生成了{len(global_mixes_df)}个无碳排放约束的配合比")
+        print("=" * 120)
+        
+        # 显示关键参数
+        key_cols = ['OPC (kg/m3)', 'S (kg/m3)', 'FA (kg/m3)', 'W/B', 'W (kg/m3)', 
+                   'Predicted_CS_MPa', 'Target_CS_MPa', 'Error_MPa', 'Percentage_Error_%']
+        
+        # 只显示前20个作为预览
+        preview_df = global_mixes_df[key_cols].head(20).copy()
+        pd.set_option('display.float_format', lambda x: f'{x:.4f}' if isinstance(x, (float, np.float64)) else str(x))
+        print(f"\n配合比预览（前20个）:")
+        print(preview_df.to_string(index=False))
+        
+        # 显示阶段1统计信息
+        print(f"\n阶段1统计信息:")
+        print(f"生成的配合比总数: {len(global_mixes_df)}")
+        print(f"平均预测强度: {global_mixes_df['Predicted_CS_MPa'].mean():.4f} MPa")
+        print(f"平均绝对误差: {global_mixes_df['Error_MPa'].abs().mean():.4f} MPa")
+        print(f"平均百分比误差: {global_mixes_df['Percentage_Error_%'].mean():.4f}%")
+        print(f"最大百分比误差: {global_mixes_df['Percentage_Error_%'].max():.4f}%")
 
-        # 5. 显示结果
-        st.divider()
-        st.subheader("📊 生成结果总表")
-        st.dataframe(result_df, use_container_width=True, height=400)
-
-        # 6. 关键指标统计
-        st.subheader("📈 关键指标统计")
-        stat_col1, stat_col2, stat_col3, stat_col4 = st.columns(4)
-        avg_carbon = result_df['碳排放(kgCO₂/m³)'].mean()
-        avg_error = result_df['误差(MPa)'].abs().mean()
-        avg_error_pct = result_df['误差(%)'].mean()
-        carbon_reduction = 662.8 - avg_carbon  # 基准碳排放（普通混凝土）
-
-        with stat_col1:
-            st.metric("平均碳排放", f"{avg_carbon:.1f} kgCO₂/m³")
-        with stat_col2:
-            st.metric("平均强度误差", f"{avg_error:.2f} MPa")
-        with stat_col3:
-            st.metric("平均误差率", f"{avg_error_pct:.2f}%")
-        with stat_col4:
-            st.metric("平均碳减排", f"{carbon_reduction:.1f} kgCO₂/m³")
-
-        # 7. 最优配比推荐（误差最小+碳排放最低）
-        st.subheader("🏆 最优低碳配比推荐")
-        result_df['综合评分'] = result_df['误差(%)'] + result_df['碳排放(kgCO₂/m³)']/10
-        best_mix = result_df.loc[result_df['综合评分'].idxmin()].to_frame().T
-        st.dataframe(best_mix.drop(columns=['综合评分']), use_container_width=True)
-
-        # 8. 导出功能
-        st.subheader("💾 结果导出")
-        export_col1, export_col2 = st.columns(2)
-        with export_col1:
-            excel_file = to_excel(result_df.drop(columns=['综合评分']))
-            st.download_button(
-                label="📥 导出Excel文件",
-                data=excel_file,
-                file_name=f"低碳混凝土配比_{target_strength}MPa.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        # 阶段2：低碳筛选
+        low_carbon_choice = input("\n是否点击'低碳按钮'筛选低碳配合比? (y/n): ")
+        if low_carbon_choice.lower() == 'y':
+            print(f"\n===== 阶段2：筛选低碳配合比 =====")
+            carbon_threshold = float(input("请输入碳排放阈值 (kg CO2 eq/m³) (默认600): ") or "600")
+            num_selected = int(input("请输入最终选择的低碳配合比数量 (默认20): ") or "20")
+            
+            # 筛选低碳配合比
+            low_carbon_df = filter_low_carbon_mixes(
+                global_mixes_df, 
+                carbon_threshold=carbon_threshold, 
+                num_selected=num_selected
             )
-        with export_col2:
-            csv_file = to_csv(result_df.drop(columns=['综合评分']))
-            st.download_button(
-                label="📥 导出CSV文件",
-                data=csv_file,
-                file_name=f"低碳混凝土配比_{target_strength}MPa.csv",
-                mime="text/csv"
-            )
 
-        st.success("✅ 配比生成完成，可导出文件用于实际生产参考！")
+            # 显示低碳筛选结果
+            print("\n" + "=" * 120)
+            print(f"低碳配合比筛选结果 (目标强度: {target_strength} MPa, 碳排放≤{carbon_threshold})")
+            print("=" * 120)
+            
+            # 显示低碳配合比关键信息
+            low_carbon_key_cols = key_cols + ['碳排放(kg CO2 eq/m³)']
+            low_carbon_display_df = low_carbon_df[[col for col in low_carbon_key_cols if col in low_carbon_df.columns]].copy()
+            print(f"\n低碳配合比列表:")
+            print(low_carbon_display_df.to_string(index=False))
 
-if __name__ == "__main__":
-    main()
+            # 低碳统计信息
+            print(f"\n低碳配合比统计信息:")
+            print(f"筛选出的低碳配合比数量: {len(low_carbon_df)}")
+            print(f"平均碳排放量: {low_carbon_df['碳排放(kg CO2 eq/m³)'].mean():.4f} kg CO2 eq/m³")
+            print(f"最低碳排放量: {low_carbon_df['碳排放(kg CO2 eq/m³)'].min():.4f} kg CO2 eq/m³")
+            print(f"最高碳排放量: {low_carbon_df['碳排放(kg CO2 eq/m³)'].max():.4f} kg CO2 eq/m³")
+            print(f"平均强度误差: {low_carbon_df['Percentage_Error_%'].mean():.4f}%")
 
+            # 找到最优低碳配合比
+            low_carbon_df['综合评分'] = low_carbon_df['Error_MPa'].abs() + (low_carbon_df['碳排放(kg CO2 eq/m³)'] / 1000)
+            best_idx = low_carbon_df['综合评分'].argmin()
+            best_mix = low_carbon_df.iloc[best_idx]
+
+            print(f"\n最优低碳配合比 (序号 {best_idx + 1}):")
+            print(f"  预测强度: {best_mix['Predicted_CS_MPa']:.4f} MPa")
+            print(f"  强度误差: {best_mix['Percentage_Error_%']:.4f}%")
+            print(f"  碳排放量: {best_mix['碳排放(kg CO2 eq/m³)']:.4f} kg CO2 eq/m³")
+
+            # 保存低碳结果
+            save_option = input("\n是否保存低碳配合比到Excel文件? (y/n): ")
+            if save_option.lower() == 'y':
+                save_path = f"D:\\啦啦啦啦啦\\低碳配合比_目标强度{target_strength}MPa_阈值{carbon_threshold}.xlsx"
+                
+                with pd.ExcelWriter(save_path, engine='openpyxl') as writer:
+                    # 保存原始所有配合比
+                    global_mixes_df.to_excel(writer, index=False, sheet_name='所有配合比')
+                    # 保存低碳筛选结果
+                    low_carbon_df.to_excel(writer, index=False, sheet_name='低碳配合比')
+                    
+                    # 设置列宽
+                    for sheet_name in ['所有配合比', '低碳配合比']:
+                        worksheet = writer.sheets[sheet_name]
+                        df_sheet = global_mixes_df if sheet_name == '所有配合比' else low_carbon_df
+                        for column in df_sheet:
+                            column_width = max(df_sheet[column].astype(str).map(len).max(), len(column))
+                            col_idx = df_sheet.columns.get_loc(column)
+                            worksheet.column_dimensions[chr(65 + col_idx)].width = column_width + 2
+
+                print(f"结果已保存到: {save_path}")
+
+        # 保存阶段1结果
+        save_original = input("\n是否保存所有生成的配合比（阶段1）到Excel文件? (y/n): ")
+        if save_original.lower() == 'y':
+            save_path = f"D:\\啦啦啦啦啦\\所有配合比_目标强度{target_strength}MPa.xlsx"
+            
+            with pd.ExcelWriter(save_path, engine='openpyxl') as writer:
+                global_mixes_df.to_excel(writer, index=False, sheet_name='所有配合比')
+                
+                # 设置列宽
+                worksheet = writer.sheets['所有配合比']
+                for column in global_mixes_df:
+                    column_width = max(global_mixes_df[column].astype(str).map(len).max(), len(column))
+                    col_idx = global_mixes_df.columns.get_loc(column)
+                    worksheet.column_dimensions[chr(65 + col_idx)].width = column_width + 2
+
+            print(f"所有配合比已保存到: {save_path}")
+
+    except ValueError as ve:
+        print(f"输入错误: {ve}")
+        print("请输入有效的数字！")
+    except Exception as e:
+        print(f"发生错误: {e}")
+        import traceback
+        traceback.print_exc()
+
+# 模型评估
+print("\n" + "=" * 60)
+print("模型性能评估")
+print("=" * 60)
+
+# INN模型评估
+inn_pred_train = inn_model.predict(inn_X_train)
+inn_pred_test = inn_model.predict(inn_X_test)
+
+inn_train_rmse = np.sqrt(mean_squared_error(inn_y_train, inn_pred_train))
+inn_test_rmse = np.sqrt(mean_squared_error(inn_y_test, inn_pred_test))
+inn_train_r2 = r2_score(inn_y_train, inn_pred_train)
+inn_test_r2 = r2_score(inn_y_test, inn_pred_test)
+
+print(f"INN模型性能 (强度 -> 配合比):")
+print(f"  训练集RMSE: {inn_train_rmse:.6f} (标准化数据)")
+print(f"  测试集RMSE: {inn_test_rmse:.6f} (标准化数据)")
+print(f"  训练集R²: {inn_train_r2:.6f}")
+print(f"  测试集R²: {inn_test_r2:.6f}")
+
+# ANN模型评估
+ann_pred_train = ann_model.predict(ann_X_train)
+ann_pred_test = ann_model.predict(ann_X_test)
+
+ann_train_rmse = np.sqrt(mean_squared_error(ann_y_train, ann_pred_train))
+ann_test_rmse = np.sqrt(mean_squared_error(ann_y_test, ann_pred_test))
+ann_train_r2 = r2_score(ann_y_train, ann_pred_train)
+ann_test_r2 = r2_score(ann_y_test, ann_pred_test)
+
+print(f"\nANN模型性能 (配合比 -> 强度):")
+print(f"  训练集RMSE: {ann_train_rmse:.6f} (标准化数据)")
+print(f"  测试集RMSE: {ann_test_rmse:.6f} (标准化数据)")
+print(f"  训练集R²: {ann_train_r2:.6f}")
+print(f"  测试集R²: {ann_test_r2:.6f}")
+
+print("\n训练完成！")
+print("程序结束。")
