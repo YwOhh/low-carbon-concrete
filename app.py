@@ -32,13 +32,13 @@ div.stDownloadButton > button {
 </style>
 """, unsafe_allow_html=True)
 
-# ====================== 碳排放计算（关键修改：列名无空格） ======================
+# ====================== 碳排放计算 ======================
 def calculate_emission(row):
     GWP = {
         'OPC': 0.925754987, 'S': 0.096949054, 'FA': 0.035101155, 'SF': 0.306808295,
         'GS': 0.004197845, 'ADD': 0.940857761, 'FIBER': 0.027134144, 'WATER': 0.000552102
     }
-    # 全部改为无空格列名，100%匹配你的Excel
+    # 列名严格匹配你的Excel无空格格式，与f_real完全一致
     e = lambda k, v: row[k] * GWP[v] if k in row else 0
     total = (
         e('OPC(kg/m3)', 'OPC') + e('S(kg/m3)', 'S') + e('FA(kg/m3)', 'FA') +
@@ -48,19 +48,19 @@ def calculate_emission(row):
     )
     return total
 
-# ====================== 低碳优化（关键修改：列名无空格） ======================
+# ====================== 低碳优化 ======================
 def optimize_for_low_carbon(mix, cols, threshold=600):
     df = pd.DataFrame([mix], columns=cols)
     em = calculate_emission(df.iloc[0])
     if em <= threshold:
         return mix
 
-    # 用无空格列名找索引，避免IndexError
+    # 使用无空格列名查找索引，并增加容错判断
     o = cols.index('OPC(kg/m3)') if 'OPC(kg/m3)' in cols else -1
     f = cols.index('FA(kg/m3)') if 'FA(kg/m3)' in cols else -1
     s = cols.index('S(kg/m3)') if 'S(kg/m3)' in cols else -1
 
-    # 确保索引有效
+    # 如果关键列不存在，直接返回原mix，避免报错
     if o == -1 or f == -1 or s == -1:
         return mix
 
@@ -277,6 +277,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
