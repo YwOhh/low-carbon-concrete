@@ -38,9 +38,8 @@ def calculate_emission(row):
         'OPC': 0.925754987, 'S': 0.096949054, 'FA': 0.035101155, 'SF': 0.306808295,
         'GS': 0.004197845, 'ADD': 0.940857761, 'FIBER': 0.027134144, 'WATER': 0.000552102
     }
-    # 动态遍历row的列名，自动匹配计算，不管列名是什么
     total = 0.0
-    # 水泥、粉煤灰、矿渣、硅灰、水、纤维
+    # 遍历列名，用关键词匹配
     for key in row.index:
         if 'OPC' in key:
             total += row[key] * GWP['OPC']
@@ -56,12 +55,14 @@ def calculate_emission(row):
             total += row[key] * GWP['WATER']
         elif 'Fvol' in key:
             total += row[key] * GWP['FIBER']
-    # 外加剂（SP + HPMC）
-    sp = row.get([k for k in row.index if 'SP' in k][0], 0)
-    hpmc = row.get([k for k in row.index if 'HPMC' in k][0], 0)
+    # 外加剂：SP + HPMC（容错版）
+    sp_cols = [k for k in row.index if 'SP' in k]
+    sp = row[sp_cols[0]] if sp_cols else 0
+    hpmc_cols = [k for k in row.index if 'HPMC' in k]
+    hpmc = row[hpmc_cols[0]] if hpmc_cols else 0
     total += (sp + hpmc) * GWP['ADD']
     return total
-
+    
 # ====================== 低碳优化 ======================
 def optimize_for_low_carbon(mix, cols, threshold=600):
     df = pd.DataFrame([mix], columns=cols)
@@ -291,6 +292,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
