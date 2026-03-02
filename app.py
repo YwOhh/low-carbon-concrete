@@ -161,11 +161,11 @@ def train_all_models():
 # ====================== 约束（适配过滤后的列） ======================
 def constrain(mix, f_cols, stats, cd=28, carbon=600):
     mix = np.maximum(mix, 0)
-    # 只对存在的列应用约束
+    # 关键：用 f_real（过滤后的列）和 mix 列数匹配
     for i,c in enumerate(f_cols):
         if c in stats:
             mix[:,i] = np.clip(mix[:,i], stats[c]['min'], stats[c]['max'])
-    # 低碳优化
+    # 低碳优化（用 f_cols，和 mix 列名一致）
     for i in range(len(mix)):
         mix[i] = optimize_for_low_carbon(mix[i], f_cols, carbon)
     return mix
@@ -277,4 +277,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
