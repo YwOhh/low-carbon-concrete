@@ -237,7 +237,7 @@ def constrain(mix_array, valid_cols, stats_dict, cd=28, carbon_limit=600):
     return mix_array
 
 # ====================== 生成函数（全流程无报错） ======================
-def generate_mix(target_strength, n_mix=10, carbon_limit=600, models_tuple):
+def generate_mix(models_tuple, target_strength, n_mix=10, carbon_limit=600):
     # 解包模型和工具（容错，避免None）
     try:
         (model_inn, model_ann, 
@@ -372,7 +372,7 @@ def main():
     # 4. 生成配比（用户触发）
     if st.button("🚀 一键生成低碳配合比"):
         with st.spinner(f"正在生成{mix_count}组低碳配比..."):
-            result_df = generate_mix(target_strength, mix_count, carbon_limit, models)
+            result_df = generate_mix(models, target_strength, mix_count, carbon_limit)
         if result_df is None:
             st.error("配比生成失败，请重试")
             return
@@ -429,3 +429,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
