@@ -72,55 +72,55 @@ def optimize_for_low_carbon(mix, cols, threshold=600):
 # ====================== 模型训练（缓存） ======================
 @st.cache_resource(show_spinner=False)
 def train_all_models():
-np.random.seed(42)
+    np.random.seed(42)
 
-# 1. 读取在线 Excel 数据（适配你的英文名文件）
-url = "https://raw.githubusercontent.com/YwOhh/low-carbon-concrete/main/data.xlsx"
-df = pd.read_excel(url)
+    # 1. 读取在线 Excel 数据（适配你的英文名文件）
+    url = "https://raw.githubusercontent.com/YwOhh/low-carbon-concrete/main/data.xlsx"
+    df = pd.read_excel(url)
 
-# 2. 列名映射（完全匹配你的 Excel 列名，无空格）
-mapping = {
-    'OPC(kg/m3)': 'OPC(kg/m3)',
-    'S(kg/m3)': 'S(kg/m3)',
-    'W/B': 'W/B',
-    'FA(kg/m3)': 'FA(kg/m3)',
-    'GS(kg/m3)': 'GS(kg/m3)',
-    'SF(kg/m3)': 'SF(kg/m3)',
-    'SP(kg/m3)': 'SP(kg/m3)',
-    'HPMC(kg/m3)': 'HPMC(kg/m3)',
-    'W(kg/m3)': 'W(kg/m3)',
-    'Fvol(%)f': 'Fvol(%)f',
-    'CD（d)': 'CD（d)',
-    'LD(X,Y,Z)': 'LD(X,Y,Z)',
-    'Strength（GPa）': 'Strength（GPa）',
-    'Elastic Modulus(GPa)': 'Elastic Modulus(GPa)',
-    'Density(g/cm3)': 'Density(g/cm3)',
-    'Lf/Df': 'Lf/Df',
-    'Df(μm)': 'Df(μm)',
-    'Lf(mm)': 'Lf(mm)',
-    'CS(MPa)': 'CS(MPa)'
-}
+    # 2. 列名映射（完全匹配你的 Excel 列名，无空格）
+    mapping = {
+        'OPC(kg/m3)': 'OPC(kg/m3)',
+        'S(kg/m3)': 'S(kg/m3)',
+        'W/B': 'W/B',
+        'FA(kg/m3)': 'FA(kg/m3)',
+        'GS(kg/m3)': 'GS(kg/m3)',
+        'SF(kg/m3)': 'SF(kg/m3)',
+        'SP(kg/m3)': 'SP(kg/m3)',
+        'HPMC(kg/m3)': 'HPMC(kg/m3)',
+        'W(kg/m3)': 'W(kg/m3)',
+        'Fvol(%)f': 'Fvol(%)f',
+        'CD（d)': 'CD（d)',
+        'LD(X,Y,Z)': 'LD(X,Y,Z)',
+        'Strength（GPa）': 'Strength（GPa）',
+        'Elastic Modulus(GPa)': 'Elastic Modulus(GPa)',
+        'Density(g/cm3)': 'Density(g/cm3)',
+        'Lf/Df': 'Lf/Df',
+        'Df(μm)': 'Df(μm)',
+        'Lf(mm)': 'Lf(mm)',
+        'CS(MPa)': 'CS(MPa)'
+    }
 
-f_cols = list(mapping.keys())[:-1]
-t_col = list(mapping.keys())[-1]
-f_real = [mapping[c] for c in f_cols]
-t_real = mapping[t_col]
+    f_cols = list(mapping.keys())[:-1]
+    t_col = list(mapping.keys())[-1]
+    f_real = [mapping[c] for c in f_cols]
+    t_real = mapping[t_col]
 
-# 3. 计算特征合理范围（新增列名检查，避免KeyError）
-stats = {}
-for c in f_real:
-    if c in df.columns:  # 确保列名在Excel中存在
-        d = df[c]
-        q1, q3 = d.quantile(0.05), d.quantile(0.95)
-        mn, mx = max(0, q1 - 1.5*(q3-q1)), q3 + 1.5*(q3-q1)
-        # 水泥和粉煤灰的范围约束
-        if 'OPC' in c:
-            mn, mx = max(mn, 50), min(mx, 300)
-        if 'FA' in c:
-            mn, mx = max(mn, 20), min(mx, 600)
-        stats[c] = {'min': mn, 'max': mx}
-    else:
-        print(f"提示：Excel中未找到列 {c}，已跳过")  # 调试用，避免报错
+    # 3. 计算特征合理范围（新增列名检查，避免KeyError）
+    stats = {}
+    for c in f_real:
+        if c in df.columns:  # 确保列名在Excel中存在
+            d = df[c]
+            q1, q3 = d.quantile(0.05), d.quantile(0.95)
+            mn, mx = max(0, q1 - 1.5*(q3-q1)), q3 + 1.5*(q3-q1)
+            # 水泥和粉煤灰的范围约束
+            if 'OPC' in c:
+                mn, mx = max(mn, 50), min(mx, 300)
+            if 'FA' in c:
+                mn, mx = max(mn, 20), min(mx, 600)
+            stats[c] = {'min': mn, 'max': mx}
+        else:
+            print(f"提示：Excel中未找到列 {c}，已跳过")  # 调试用，避免报错
 
     d2 = df.sample(frac=1, random_state=42)
     half = len(d2)//2
@@ -265,5 +265,6 @@ def main():
 if __name__ == "__main__":
 
     main()
+
 
 
