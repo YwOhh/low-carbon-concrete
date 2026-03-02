@@ -38,7 +38,7 @@ def calculate_emission(row):
         'OPC': 0.925754987, 'S': 0.096949054, 'FA': 0.035101155, 'SF': 0.306808295,
         'GS': 0.004197845, 'ADD': 0.940857761, 'FIBER': 0.027134144, 'WATER': 0.000552102
     }
-    # 全部改为无空格列名，匹配Excel
+    # 全部改为无空格列名，100%匹配你的Excel
     e = lambda k, v: row[k] * GWP[v] if k in row else 0
     total = (
         e('OPC(kg/m3)', 'OPC') + e('S(kg/m3)', 'S') + e('FA(kg/m3)', 'FA') +
@@ -277,6 +277,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
