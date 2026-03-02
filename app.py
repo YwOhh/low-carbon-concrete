@@ -38,14 +38,28 @@ def calculate_emission(row):
         'OPC': 0.925754987, 'S': 0.096949054, 'FA': 0.035101155, 'SF': 0.306808295,
         'GS': 0.004197845, 'ADD': 0.940857761, 'FIBER': 0.027134144, 'WATER': 0.000552102
     }
-    # 列名严格匹配你的Excel无空格格式，与f_real完全一致
-    e = lambda k, v: row[k] * GWP[v] if k in row else 0
-    total = (
-        e('OPC(kg/m3)', 'OPC') + e('S(kg/m3)', 'S') + e('FA(kg/m3)', 'FA') +
-        e('SF(kg/m3)', 'SF') + e('GS(kg/m3)', 'GS') +
-        (row['SP(kg/m3)'] + row['HPMC(kg/m3)']) * GWP['ADD'] +
-        e('Fvol(%)f', 'FIBER') + e('W(kg/m3)', 'WATER')
-    )
+    # 动态遍历row的列名，自动匹配计算，不管列名是什么
+    total = 0.0
+    # 水泥、粉煤灰、矿渣、硅灰、水、纤维
+    for key in row.index:
+        if 'OPC' in key:
+            total += row[key] * GWP['OPC']
+        elif 'S(kg/m3)' in key:
+            total += row[key] * GWP['S']
+        elif 'FA' in key:
+            total += row[key] * GWP['FA']
+        elif 'SF' in key:
+            total += row[key] * GWP['SF']
+        elif 'GS' in key:
+            total += row[key] * GWP['GS']
+        elif 'W(kg/m3)' in key:
+            total += row[key] * GWP['WATER']
+        elif 'Fvol' in key:
+            total += row[key] * GWP['FIBER']
+    # 外加剂（SP + HPMC）
+    sp = row.get([k for k in row.index if 'SP' in k][0], 0)
+    hpmc = row.get([k for k in row.index if 'HPMC' in k][0], 0)
+    total += (sp + hpmc) * GWP['ADD']
     return total
 
 # ====================== 低碳优化 ======================
@@ -277,6 +291,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
