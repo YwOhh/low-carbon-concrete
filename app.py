@@ -73,7 +73,8 @@ def optimize_for_low_carbon(mix, cols, threshold=600):
 @st.cache_resource(show_spinner=False)
 def train_all_models():
     np.random.seed(42)
-    df = pd.read_excel(r"D:\啦啦啦啦啦\修改后完整数据集2.xlsx")
+    url = "https://raw.githubusercontent.com/YwOhh/low-carbon-concrete/main/修改后完整数据集2.xlsx"
+    df = pd.read_excel(url)
 
     mapping = {
         'OPC (kg/m3)': 'OPC (kg/m3)', 'S (kg/m3)': 'S (kg/m3)', 'W/B': 'W/B',
@@ -180,7 +181,7 @@ def to_csv(df):
 
 # ====================== 主界面 ======================
 def main():
-    st.title("🌱 低碳混凝土配合比智能生成系统（专业版）")
+    st.title(" 低碳混凝土配合比智能生成系统")
     st.markdown("### 双AI模型 | 强制低碳 | 强度精准 | 一键导出报告")
 
     with st.spinner("模型加载中..."):
@@ -240,4 +241,5 @@ def main():
         st.success("✅ 生成完成！可直接导出使用")
 
 if __name__ == "__main__":
+
     main()
