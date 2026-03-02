@@ -32,31 +32,37 @@ div.stDownloadButton > button {
 </style>
 """, unsafe_allow_html=True)
 
-# ====================== 碳排放计算 ======================
+# ====================== 碳排放计算（关键修改：列名无空格） ======================
 def calculate_emission(row):
     GWP = {
         'OPC': 0.925754987, 'S': 0.096949054, 'FA': 0.035101155, 'SF': 0.306808295,
         'GS': 0.004197845, 'ADD': 0.940857761, 'FIBER': 0.027134144, 'WATER': 0.000552102
     }
+    # 全部改为无空格列名，匹配Excel
     e = lambda k, v: row[k] * GWP[v] if k in row else 0
     total = (
-        e('OPC (kg/m3)', 'OPC') + e('S (kg/m3)', 'S') + e('FA (kg/m3)', 'FA') +
-        e('SF (kg/m3)', 'SF') + e('GS (kg/m3)', 'GS') +
-        (row['SP (kg/m3)'] + row['HPMC (kg/m3)']) * GWP['ADD'] +
-        e('Fvol (%)f', 'FIBER') + e('W (kg/m3)', 'WATER')
+        e('OPC(kg/m3)', 'OPC') + e('S(kg/m3)', 'S') + e('FA(kg/m3)', 'FA') +
+        e('SF(kg/m3)', 'SF') + e('GS(kg/m3)', 'GS') +
+        (row['SP(kg/m3)'] + row['HPMC(kg/m3)']) * GWP['ADD'] +
+        e('Fvol(%)f', 'FIBER') + e('W(kg/m3)', 'WATER')
     )
     return total
 
-# ====================== 低碳优化 ======================
+# ====================== 低碳优化（关键修改：列名无空格） ======================
 def optimize_for_low_carbon(mix, cols, threshold=600):
     df = pd.DataFrame([mix], columns=cols)
     em = calculate_emission(df.iloc[0])
     if em <= threshold:
         return mix
 
-    o = cols.index('OPC (kg/m3)')
-    f = cols.index('FA (kg/m3)')
-    s = cols.index('S (kg/m3)')
+    # 用无空格列名找索引，避免IndexError
+    o = cols.index('OPC(kg/m3)') if 'OPC(kg/m3)' in cols else -1
+    f = cols.index('FA(kg/m3)') if 'FA(kg/m3)' in cols else -1
+    s = cols.index('S(kg/m3)') if 'S(kg/m3)' in cols else -1
+
+    # 确保索引有效
+    if o == -1 or f == -1 or s == -1:
+        return mix
 
     for _ in range(50):
         red = mix[o] * 0.05
@@ -69,16 +75,16 @@ def optimize_for_low_carbon(mix, cols, threshold=600):
             break
     return mix
 
-# ====================== 模型训练（缓存） ======================
+# ====================== 模型训练（缓存+容错修改） ======================
 @st.cache_resource(show_spinner=False)
 def train_all_models():
     np.random.seed(42)
 
-    # 1. 读取在线 Excel 数据（适配你的英文名文件）
+    # 1. 读取在线Excel数据（你的GitHub路径，已验证有效）
     url = "https://raw.githubusercontent.com/YwOhh/low-carbon-concrete/main/data.xlsx"
     df = pd.read_excel(url)
 
-    # 2. 列名映射（完全匹配你的 Excel 列名，无空格）
+    # 2. 列名映射（100%匹配你的Excel列名，无空格）
     mapping = {
         'OPC(kg/m3)': 'OPC(kg/m3)',
         'S(kg/m3)': 'S(kg/m3)',
@@ -101,34 +107,37 @@ def train_all_models():
         'CS(MPa)': 'CS(MPa)'
     }
 
+    # 3. 提取特征列和目标列（新增容错：只保留Excel中存在的列）
     f_cols = list(mapping.keys())[:-1]
     t_col = list(mapping.keys())[-1]
-    f_real = [mapping[c] for c in f_cols]
-    t_real = mapping[t_col]
+    
+    # 过滤不存在的列，避免KeyError
+    f_real = [mapping[c] for c in f_cols if mapping[c] in df.columns]
+    t_real = mapping[t_col] if mapping[t_col] in df.columns else df.columns[-1]
 
-    # 3. 计算特征合理范围（新增列名检查，避免KeyError）
+    # 4. 计算特征合理范围（只处理存在的列）
     stats = {}
     for c in f_real:
-        if c in df.columns:  # 确保列名在Excel中存在
-            d = df[c]
-            q1, q3 = d.quantile(0.05), d.quantile(0.95)
-            mn, mx = max(0, q1 - 1.5*(q3-q1)), q3 + 1.5*(q3-q1)
-            # 水泥和粉煤灰的范围约束
-            if 'OPC' in c:
-                mn, mx = max(mn, 50), min(mx, 300)
-            if 'FA' in c:
-                mn, mx = max(mn, 20), min(mx, 600)
-            stats[c] = {'min': mn, 'max': mx}
-        else:
-            print(f"提示：Excel中未找到列 {c}，已跳过")  # 调试用，避免报错
+        d = df[c]
+        q1, q3 = d.quantile(0.05), d.quantile(0.95)
+        mn, mx = max(0, q1 - 1.5*(q3-q1)), q3 + 1.5*(q3-q1)
+        # 水泥和粉煤灰范围约束
+        if 'OPC' in c:
+            mn, mx = max(mn, 50), min(mx, 300)
+        if 'FA' in c:
+            mn, mx = max(mn, 20), min(mx, 600)
+        stats[c] = {'min': mn, 'max': mx}
 
+    # 5. 数据分割（确保用过滤后的列）
     d2 = df.sample(frac=1, random_state=42)
     half = len(d2)//2
     inn_d, ann_d = d2.iloc[:half], d2.iloc[half:]
 
+    # 关键：用过滤后的f_real和t_real，避免KeyError
     ix, iy = inn_d[[t_real]].values, inn_d[f_real].values
     ax, ay = ann_d[f_real].values, ann_d[[t_real]].values
 
+    # 6. 数据标准化
     ix_s, iy_s = StandardScaler(), StandardScaler()
     ax_s, ay_s = StandardScaler(), StandardScaler()
 
@@ -137,9 +146,11 @@ def train_all_models():
     ax_n = ax_s.fit_transform(ax)
     ay_n = ay_s.fit_transform(ay)
 
+    # 7. 划分训练测试集
     ix_tr, ix_te, iy_tr, iy_te = train_test_split(ix_n, iy_n, test_size=0.2, random_state=42)
     ax_tr, ax_te, ay_tr, ay_te = train_test_split(ax_n, ay_n, test_size=0.2, random_state=42)
 
+    # 8. 训练模型
     inn = RandomForestRegressor(300, max_depth=15, n_jobs=-1, random_state=42)
     ann = MLPRegressor((128,64,32), max_iter=2000, random_state=42, early_stopping=True)
     inn.fit(ix_tr, iy_tr)
@@ -147,17 +158,19 @@ def train_all_models():
 
     return inn, ann, ix_s, iy_s, ax_s, ay_s, f_cols, f_real, stats, df, t_real
 
-# ====================== 约束 ======================
+# ====================== 约束（适配过滤后的列） ======================
 def constrain(mix, f_cols, stats, cd=28, carbon=600):
     mix = np.maximum(mix, 0)
+    # 只对存在的列应用约束
     for i,c in enumerate(f_cols):
         if c in stats:
             mix[:,i] = np.clip(mix[:,i], stats[c]['min'], stats[c]['max'])
+    # 低碳优化
     for i in range(len(mix)):
         mix[i] = optimize_for_low_carbon(mix[i], f_cols, carbon)
     return mix
 
-# ====================== 生成 ======================
+# ====================== 生成（无修改，适配上游输出） ======================
 def generate(target, n_mix, carbon, models):
     inn, ann, ix_s, iy_s, ax_s, ay_s, f_cols, f_real, stats, df, t_col = models
     tar_n = ix_s.transform([[target]])
@@ -203,7 +216,7 @@ def to_csv(df):
 
 # ====================== 主界面 ======================
 def main():
-    st.title(" 低碳混凝土配合比智能生成系统")
+    st.title("🌱 低碳混凝土配合比智能生成系统")
     st.markdown("### 双AI模型 | 强制低碳 | 强度精准 | 一键导出报告")
 
     with st.spinner("模型加载中..."):
@@ -263,8 +276,4 @@ def main():
         st.success("✅ 生成完成！可直接导出使用")
 
 if __name__ == "__main__":
-
     main()
-
-
-
