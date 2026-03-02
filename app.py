@@ -161,11 +161,11 @@ def train_all_models():
 # ====================== 约束（适配过滤后的列） ======================
 def constrain(mix, f_cols, stats, cd=28, carbon=600):
     mix = np.maximum(mix, 0)
-    # 关键：用 f_real（过滤后的列）和 mix 列数匹配
-    for i,c in enumerate(f_cols):
+    # 只对存在的列应用约束，确保列数匹配
+    for i, c in enumerate(f_cols):
         if c in stats:
-            mix[:,i] = np.clip(mix[:,i], stats[c]['min'], stats[c]['max'])
-    # 低碳优化（用 f_cols，和 mix 列名一致）
+            mix[:, i] = np.clip(mix[:, i], stats[c]['min'], stats[c]['max'])
+    # 低碳优化
     for i in range(len(mix)):
         mix[i] = optimize_for_low_carbon(mix[i], f_cols, carbon)
     return mix
@@ -180,7 +180,7 @@ def generate(target, n_mix, carbon, models):
         noise = np.random.normal(0, 0.04, tar_n.shape)
         m = inn.predict(tar_n + noise)
         m = iy_s.inverse_transform(m.reshape(1,-1))
-        m = constrain(m, f_cols, stats, 28, carbon)
+        m = constrain(m, f_real, stats, 28, carbon)
         candidates.append(m[0])
 
         e = calculate_emission(pd.DataFrame([m[0]], columns=f_cols).iloc[0])
@@ -277,5 +277,6 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
