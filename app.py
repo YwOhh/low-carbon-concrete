@@ -5,7 +5,7 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.model_selection import train_test_split
 from sklearn.neural_network import MLPRegressor
 from sklearn.ensemble import RandomForestRegressor
-from sklearn.metrics import mean_squared_error, r2_score
+from sklearn.metrics import r2_score
 import warnings
 warnings.filterwarnings('ignore')
 
@@ -49,28 +49,117 @@ def calculate_emission(row):
 @st.cache_resource
 def load_and_preprocess_data():
     try:
-        # ... 原有数据加载与预处理代码保持不变 ...
-        # （从读取 Excel 到返回 preprocessed_data 字典的所有步骤）
+        # ---------- 1. 读取 Excel ----------
+        df = pd.read_excel('data.xlsx', sheet_name='3DP-FRC CS')
+        st.success(f"✅ 数据加载成功！共 {df.shape[0]} 条记录，{df.shape[1]} 个字段")
 
-        # ===== 新增：模型训练 =====
-        inn_X_scaled = preprocessed_data['inn_X_scaled']
-        inn_y_scaled = preprocessed_data['inn_y_scaled']
-        ann_X_scaled = preprocessed_data['ann_X_scaled']
-        ann_y_scaled = preprocessed_data['ann_y_scaled']
+        # ---------- 2. 列名规范化匹配 ----------
+        def normalize(name):
+            # 去除空格，将中文括号替换为英文括号，转为小写
+            return name.replace(' ', '').replace('（', '(').replace('）', ')').lower()
 
+        # 构建实际列名的规范化映射
+        actual_columns = {normalize(col): col for col in df.columns}
+
+        # 匹配特征列
+        feature_columns = []
+        for col in FEATURE_COLUMNS_ORIGINAL:
+            norm_col = normalize(col)
+            if norm_col in actual_columns:
+                feature_columns.append(actual_columns[norm_col])
+            else:
+                st.warning(f"⚠ 缺失特征列：{col}，已跳过")
+
+        # 匹配目标列
+        target_column = None
+        norm_target = normalize(TARGET_COLUMN_ORIGINAL)
+        if norm_target in actual_columns:
+            target_column = actual_columns[norm_target]
+        else:
+            st.error(f"❌ 缺失目标列：{TARGET_COLUMN_ORIGINAL}")
+            st.stop()
+
+        if not feature_columns:
+            st.error("❌ 没有找到任何特征列，请检查列名配置")
+            st.stop()
+
+        # ---------- 3. 计算特征统计信息（用于约束） ----------
+        feature_stats = {}
+        for col in feature_columns:
+            col_data = df[col].dropna()
+            if len(col_data) == 0:
+                feature_stats[col] = {'min': 0, 'max': 100, 'non_zero_min': 0, 'mean': 0, 'std': 0}
+                continue
+            non_zero_data = col_data[col_data > 0]
+            non_zero_min = non_zero_data.min() if len(non_zero_data) > 0 else 0
+
+            # 使用分位数估计合理范围（避免异常值影响）
+            q1 = col_data.quantile(0.05)
+            q3 = col_data.quantile(0.95)
+            iqr = q3 - q1
+            min_val = max(0, q1 - 1.5 * iqr)
+            max_val = q3 + 1.5 * iqr
+
+            # 针对特定列调整范围
+            if 'Fvol' in col.lower():
+                min_val = max(min_val, non_zero_min * 0.5 if non_zero_min > 0 else 0.1)
+                max_val = min(max_val, 10)
+            elif 'FA' in col and 'kg/m3' in col:
+                min_val = max(min_val, non_zero_min * 0.5 if non_zero_min > 0 else 20)
+                max_val = min(max_val, 600)
+            elif 'OPC' in col:
+                min_val = max(min_val, non_zero_min * 0.5 if non_zero_min > 0 else 100)
+                max_val = min(max_val, 800)
+            elif 'W (kg/m3)' in col:
+                min_val = max(min_val, non_zero_min * 0.5 if non_zero_min > 0 else 100)
+            elif 'SP' in col or 'HPMC' in col:
+                min_val = max(min_val, non_zero_min * 0.5 if non_zero_min > 0 else 0.1)
+
+            feature_stats[col] = {
+                'min': float(min_val),
+                'max': float(max_val),
+                'non_zero_min': float(non_zero_min),
+                'mean': float(col_data.mean()),
+                'std': float(col_data.std())
+            }
+
+        # ---------- 4. 数据划分：一半用于INN，一半用于ANN ----------
+        df_shuffled = df.sample(frac=1, random_state=42).reset_index(drop=True)
+        split_point = len(df_shuffled) // 2
+        inn_data = df_shuffled.iloc[:split_point]   # 用于INN：强度 → 特征
+        ann_data = df_shuffled.iloc[split_point:]   # 用于ANN：特征 → 强度
+
+        # INN 数据：X = 强度, y = 特征
+        inn_X = inn_data[[target_column]].values
+        inn_y = inn_data[feature_columns].values
+        inn_X_scaler = StandardScaler()
+        inn_y_scaler = StandardScaler()
+        inn_X_scaled = inn_X_scaler.fit_transform(inn_X)
+        inn_y_scaled = inn_y_scaler.fit_transform(inn_y)
+
+        # ANN 数据：X = 特征, y = 强度
+        ann_X = ann_data[feature_columns].values
+        ann_y = ann_data[[target_column]].values
+        ann_X_scaler = StandardScaler()
+        ann_y_scaler = StandardScaler()
+        ann_X_scaled = ann_X_scaler.fit_transform(ann_X)
+        ann_y_scaled = ann_y_scaler.fit_transform(ann_y)
+
+        # ---------- 5. 训练模型 ----------
+        # INN 模型：随机森林（输入强度，输出特征）
         inn_X_train, inn_X_test, inn_y_train, inn_y_test = train_test_split(
             inn_X_scaled, inn_y_scaled, test_size=0.2, random_state=42
         )
-        ann_X_train, ann_X_test, ann_y_train, ann_y_test = train_test_split(
-            ann_X_scaled, ann_y_scaled, test_size=0.2, random_state=42
-        )
-
         inn_model = RandomForestRegressor(
             n_estimators=100, max_depth=10, min_samples_split=5,
             min_samples_leaf=2, random_state=42, n_jobs=-1
         )
         inn_model.fit(inn_X_train, inn_y_train)
 
+        # ANN 模型：MLP（输入特征，输出强度）
+        ann_X_train, ann_X_test, ann_y_train, ann_y_test = train_test_split(
+            ann_X_scaled, ann_y_scaled, test_size=0.2, random_state=42
+        )
         ann_model = MLPRegressor(
             hidden_layer_sizes=(64, 32), activation='relu', solver='adam',
             max_iter=1000, random_state=42, learning_rate_init=0.001,
@@ -78,63 +167,36 @@ def load_and_preprocess_data():
         )
         ann_model.fit(ann_X_train, ann_y_train)
 
+        # 评估
         inn_test_r2 = r2_score(inn_y_test, inn_model.predict(inn_X_test))
         ann_test_r2 = r2_score(ann_y_test, ann_model.predict(ann_X_test))
         st.success(f"✅ 模型训练完成！INN R²: {inn_test_r2:.4f}, ANN R²: {ann_test_r2:.4f}")
 
-        # 将模型添加到返回字典中
-        preprocessed_data['models'] = {
-            'inn_model': inn_model,
-            'ann_model': ann_model,
-            'inn_test_r2': inn_test_r2,
-            'ann_test_r2': ann_test_r2
+        # ---------- 6. 打包返回 ----------
+        preprocessed_data = {
+            'df': df,
+            'feature_columns': feature_columns,
+            'target_column': target_column,
+            'feature_stats': feature_stats,
+            'inn_X_scaler': inn_X_scaler,
+            'inn_y_scaler': inn_y_scaler,
+            'ann_X_scaler': ann_X_scaler,
+            'ann_y_scaler': ann_y_scaler,
+            'inn_X_scaled': inn_X_scaled,
+            'inn_y_scaled': inn_y_scaled,
+            'ann_X_scaled': ann_X_scaled,
+            'ann_y_scaled': ann_y_scaled,
+            'models': {
+                'inn_model': inn_model,
+                'ann_model': ann_model,
+                'inn_test_r2': inn_test_r2,
+                'ann_test_r2': ann_test_r2
+            }
         }
-
         return preprocessed_data
 
     except Exception as e:
-        st.error(f"❌ 数据加载/预处理失败：{str(e)}")
-        st.stop()
-
-# ====================== 模型训练 ======================
-@st.cache_resource
-def train_models(preprocessed_data):
-    try:
-        inn_X_scaled = preprocessed_data['inn_X_scaled']
-        inn_y_scaled = preprocessed_data['inn_y_scaled']
-        ann_X_scaled = preprocessed_data['ann_X_scaled']
-        ann_y_scaled = preprocessed_data['ann_y_scaled']
-        
-        inn_X_train, inn_X_test, inn_y_train, inn_y_test = train_test_split(
-            inn_X_scaled, inn_y_scaled, test_size=0.2, random_state=42
-        )
-        ann_X_train, ann_X_test, ann_y_train, ann_y_test = train_test_split(
-            ann_X_scaled, ann_y_scaled, test_size=0.2, random_state=42
-        )
-        
-        inn_model = RandomForestRegressor(
-            n_estimators=100, max_depth=10, min_samples_split=5,
-            min_samples_leaf=2, random_state=42, n_jobs=-1
-        )
-        inn_model.fit(inn_X_train, inn_y_train)
-        
-        ann_model = MLPRegressor(
-            hidden_layer_sizes=(64, 32), activation='relu', solver='adam',
-            max_iter=1000, random_state=42, learning_rate_init=0.001,
-            alpha=0.0001, early_stopping=True, validation_fraction=0.1, verbose=False
-        )
-        ann_model.fit(ann_X_train, ann_y_train)
-        
-        inn_test_r2 = r2_score(inn_y_test, inn_model.predict(inn_X_test))
-        ann_test_r2 = r2_score(ann_y_test, ann_model.predict(ann_X_test))
-        st.success(f"✅ 模型训练完成！INN R²: {inn_test_r2:.4f}, ANN R²: {ann_test_r2:.4f}")
-        
-        return {
-            'inn_model': inn_model, 'ann_model': ann_model,
-            'inn_test_r2': inn_test_r2, 'ann_test_r2': ann_test_r2
-        }
-    except Exception as e:
-        st.error(f"❌ 模型训练失败：{str(e)}")
+        st.error(f"❌ 数据加载/预处理失败: {str(e)}")
         st.stop()
 
 # ====================== 约束函数 ======================
@@ -281,8 +343,6 @@ def main():
         preprocessed_data = load_and_preprocess_data()   # 现在包含了模型
         models = preprocessed_data['models']              # 提取模型
 
-    # ... 其余代码保持不变 ...
-    
     st.sidebar.header("⚙️ 参数设置")
     min_strength = float(preprocessed_data['df'][preprocessed_data['target_column']].min() * 0.8)
     max_strength = float(preprocessed_data['df'][preprocessed_data['target_column']].max() * 1.2)
@@ -322,5 +382,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-
