@@ -37,6 +37,7 @@ def calculate_emission(row):
     def normalize(name):
         return name.replace(' ', '').replace('（', '(').replace('）', ')').lower()
 
+    # 将行的列名标准化，便于快速查找
     norm_row = {normalize(col): val for col, val in row.items()}
 
     e_opc = norm_row.get(normalize('OPC (kg/m3)'), 0) * GWP['OPC (kg/m3)']
@@ -301,12 +302,7 @@ def generate_mixes(target_strength, num_mixes, preprocessed_data, models):
         mixes_df['Error_MPa'] = np.round(final_errors * np.where(final_errors >= 0, 1, -1), 2)
         mixes_df['Percentage_Error_%'] = np.round(final_percent_errors, 2)
 
-        # ===== 新增：过滤出误差小于5%的配合比 =====
-        filtered_df = mixes_df[mixes_df['Percentage_Error_%'] < 5].copy()
-        if filtered_df.empty:
-            st.warning("⚠ 生成的配合比中无误差小于5%的合格结果，请尝试调整参数或重新生成。")
-        return filtered_df
-
+        return mixes_df
     except Exception as e:
         st.error(f"❌ 配合比生成失败：{str(e)}")
         return pd.DataFrame()
@@ -370,13 +366,13 @@ def main():
 
     if not st.session_state['original_mixes'].empty:
         st.markdown("---")
-        st.markdown("### 📋 生成的配合比（误差<5%，无碳排放约束）")
+        st.markdown("### 📋 生成的配合比（无碳排放约束）")
         # 显示所有列
         st.dataframe(st.session_state['original_mixes'], use_container_width=True)
 
     if not st.session_state['low_carbon_mixes'].empty:
         st.markdown("---")
-        st.markdown("### 🌱 低碳配合比（误差<5%）")
+        st.markdown("### 🌱 低碳配合比")
         st.dataframe(st.session_state['low_carbon_mixes'], use_container_width=True)
 
         csv = st.session_state['low_carbon_mixes'].to_csv(index=False, encoding='utf-8-sig')
