@@ -37,7 +37,6 @@ def calculate_emission(row):
     def normalize(name):
         return name.replace(' ', '').replace('（', '(').replace('）', ')').lower()
 
-    # 将行的列名标准化，便于快速查找
     norm_row = {normalize(col): val for col, val in row.items()}
 
     e_opc = norm_row.get(normalize('OPC (kg/m3)'), 0) * GWP['OPC (kg/m3)']
@@ -84,6 +83,12 @@ def load_and_preprocess_data():
         if not feature_columns:
             st.error("❌ 没有找到任何特征列，请检查列名配置")
             st.stop()
+
+        # ---------- 新增：剔除异常目标值（如 CS = 0） ----------
+        original_count = len(df)
+        df = df[df[target_column] > 5]  # 只保留强度大于5MPa的样本
+        if len(df) < original_count:
+            st.info(f"已剔除 {original_count - len(df)} 条强度≤5MPa的异常记录，剩余 {len(df)} 条有效数据。")
 
         # ---------- 3. 计算特征统计信息（用于约束） ----------
         feature_stats = {}
@@ -143,23 +148,35 @@ def load_and_preprocess_data():
         ann_X_scaled = ann_X_scaler.fit_transform(ann_X)
         ann_y_scaled = ann_y_scaler.fit_transform(ann_y)
 
-        # ---------- 5. 训练模型 ----------
+        # ---------- 5. 训练模型（增强版）----------
+        # INN 模型：随机森林（输入强度，输出特征）
         inn_X_train, inn_X_test, inn_y_train, inn_y_test = train_test_split(
             inn_X_scaled, inn_y_scaled, test_size=0.2, random_state=42
         )
         inn_model = RandomForestRegressor(
-            n_estimators=100, max_depth=10, min_samples_split=5,
-            min_samples_leaf=2, random_state=42, n_jobs=-1
+            n_estimators=200,           # 原100 -> 200
+            max_depth=15,                # 原10 -> 15
+            min_samples_split=3,         # 原5 -> 3
+            min_samples_leaf=1,          # 原2 -> 1
+            random_state=42,
+            n_jobs=-1
         )
         inn_model.fit(inn_X_train, inn_y_train)
 
+        # ANN 模型：MLP（输入特征，输出强度）
         ann_X_train, ann_X_test, ann_y_train, ann_y_test = train_test_split(
             ann_X_scaled, ann_y_scaled, test_size=0.2, random_state=42
         )
         ann_model = MLPRegressor(
-            hidden_layer_sizes=(64, 32), activation='relu', solver='adam',
-            max_iter=1000, random_state=42, learning_rate_init=0.001,
-            alpha=0.0001, early_stopping=True, validation_fraction=0.1, verbose=False
+            hidden_layer_sizes=(128, 64, 32),  # 原 (64,32) -> 三层
+            activation='relu',
+            solver='adam',
+            max_iter=2000,                      # 原1000 -> 2000
+            learning_rate_init=0.001,
+            alpha=0.0001,
+            early_stopping=True,
+            validation_fraction=0.1,
+            random_state=42
         )
         ann_model.fit(ann_X_train, ann_y_train)
 
@@ -264,8 +281,9 @@ def generate_mixes(target_strength, num_mixes, preprocessed_data, models):
         candidate_percent_errors = []
 
         with st.spinner("生成候选配合比..."):
-            for i in range(num_mixes * 2):
-                noise_level = 0.05 if i < num_mixes * 2 else 0.1
+            # 增加候选数量，降低噪声水平
+            for i in range(num_mixes * 5):          # 原 num_mixes * 2 -> *5
+                noise_level = 0.02 if i < num_mixes * 5 else 0.05  # 降低噪声
                 noise = np.random.normal(0, noise_level, size=target_scaled.shape)
                 noisy_target = target_scaled + noise
 
@@ -302,7 +320,12 @@ def generate_mixes(target_strength, num_mixes, preprocessed_data, models):
         mixes_df['Error_MPa'] = np.round(final_errors * np.where(final_errors >= 0, 1, -1), 2)
         mixes_df['Percentage_Error_%'] = np.round(final_percent_errors, 2)
 
-        return mixes_df
+        # 过滤出误差小于5%的配合比
+        filtered_df = mixes_df[mixes_df['Percentage_Error_%'] < 5].copy()
+        if filtered_df.empty:
+            st.warning("⚠ 生成的配合比中无误差小于5%的合格结果，请尝试调整参数或重新生成。")
+        return filtered_df
+
     except Exception as e:
         st.error(f"❌ 配合比生成失败：{str(e)}")
         return pd.DataFrame()
@@ -366,13 +389,16 @@ def main():
 
     if not st.session_state['original_mixes'].empty:
         st.markdown("---")
-        st.markdown("### 📋 生成的配合比（无碳排放约束）")
-        # 显示所有列
+        st.markdown("### 📋 生成的配合比（误差<5%，无碳排放约束）")
         st.dataframe(st.session_state['original_mixes'], use_container_width=True)
+        
+        # 新增：显示误差分布统计
+        st.write("**误差统计（仅展示<5%的样本）**")
+        st.write(st.session_state['original_mixes']['Percentage_Error_%'].describe())
 
     if not st.session_state['low_carbon_mixes'].empty:
         st.markdown("---")
-        st.markdown("### 🌱 低碳配合比")
+        st.markdown("### 🌱 低碳配合比（误差<5%）")
         st.dataframe(st.session_state['low_carbon_mixes'], use_container_width=True)
 
         csv = st.session_state['low_carbon_mixes'].to_csv(index=False, encoding='utf-8-sig')
