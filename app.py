@@ -336,7 +336,7 @@ def filter_low_carbon_mixes(original_mixes_df):
 # ====================== Streamlit网页主逻辑 ======================
 def main():
     st.set_page_config(page_title="低碳混凝土配比", page_icon="🏗️")
-    st.title("🏗️ 混凝土配合比逆向生成系统（含低碳筛选）")
+    st.title("混凝土配合比逆向生成系统（含低碳筛选）")
     st.markdown("### 流程：逆向生成 → 低碳筛选")
 
     with st.spinner("加载数据 & 训练模型..."):
@@ -382,3 +382,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
