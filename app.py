@@ -245,7 +245,7 @@ def generate_mixes(target_strength, num_mixes, preprocessed_data, models):
         candidate_percent_errors = []
         
         with st.spinner("生成候选配合比..."):
-            for i in range(num_mixes * 3):
+            for i in range(num_mixes * 2):
                 noise_level = 0.05 if i < num_mixes*2 else 0.1
                 noise = np.random.normal(0, noise_level, size=target_scaled.shape)
                 noisy_target = target_scaled + noise
@@ -364,3 +364,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
